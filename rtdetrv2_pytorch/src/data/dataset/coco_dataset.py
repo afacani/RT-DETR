@@ -16,6 +16,10 @@ from ._dataset import DetDataset
 from .._misc import convert_to_tv_tensor
 from ...core import register
 
+import numpy as np
+import os
+import cv2
+
 __all__ = ['CocoDetection']
 
 torchvision.disable_beta_transforms_warning()
@@ -103,6 +107,36 @@ def convert_coco_poly_to_mask(segmentations, height, width):
         masks = torch.zeros((0, height, width), dtype=torch.uint8)
     return masks
 
+
+@register()
+# Inside src/data/dataset/coco_dataset.py
+class CocoDetectionRGBD(CocoDetection): # Subclassing for clarity
+    def __init__(self, img_folder, ann_file, depth_folder, **kwargs):
+        super().__init__(img_folder, ann_file, **kwargs)
+        self.depth_folder = depth_folder
+
+    def __getitem__(self, idx):
+        # 1. Load standard RGB image and Target (annotations)
+        img, target = super().get_item(idx) 
+        
+        # 2. Derive the depth filename from the RGB filename
+        # Assuming: train2017/000001.jpg -> depth2017/000001.png
+        img_id = self.ids[idx]
+        file_name = self.coco.loadImgs(img_id)[0]['file_name']
+        depth_path = os.path.join(self.depth_folder, file_name.replace('.jpg', '.png'))
+        
+        # 3. Load Depth (Depth Anything v2 output)
+        depth = cv2.imread(depth_path, cv2.IMREAD_GRAYSCALE)
+        depth = cv2.resize(depth, (img.shape[1], img.shape[0]))
+        
+        # 4. Concatenate to 4 Channels (RGB + D)
+        # Ensure depth has a channel dimension: (H, W, 1)
+        depth = np.expand_dims(depth, axis=-1)
+        rgbd = np.concatenate([img, depth], axis=-1)
+
+        rgbd = torch.from_numpy(rgbd.transpose((2, 0, 1))).to(torch.float32)
+        
+        return rgbd, target
 
 class ConvertCocoPolysToMask(object):
     def __init__(self, return_masks=False):

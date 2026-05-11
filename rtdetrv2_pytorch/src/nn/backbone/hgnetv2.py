@@ -283,7 +283,7 @@ class HGNetv2(nn.Module):
 
     arch_configs = {
         'L': {
-            'stem_channels': [3, 32, 48],
+            'stem_channels': [4, 32, 48], # change to 4 for rgb-d
             'stage_config': {
                 # in_channels, mid_channels, out_channels, num_blocks, downsample, light_block, kernel_size, layer_num
                 "stage1": [48, 48, 128, 1, False, False, 3, 6],
@@ -325,10 +325,13 @@ class HGNetv2(nn.Module):
                  return_idx=[1, 2, 3],
                  freeze_at=-1,
                  freeze_norm=False,
-                 pretrained=False):
+                 pretrained=False,
+                 in_channels=4): # change to 4 for rgb-d
         super().__init__()
         self.use_lab = use_lab
         self.return_idx = return_idx
+
+        self.arch_configs[name]['stem_channels'][0] = in_channels
 
         stem_channels = self.arch_configs[name]['stem_channels']
         stage_config = self.arch_configs[name]['stage_config']
@@ -372,14 +375,57 @@ class HGNetv2(nn.Module):
         if freeze_norm:
             self._freeze_norm(self)
 
-        if pretrained:
-            if isinstance(pretrained, bool) or 'http' in pretrained:
-                state = torch.hub.load_state_dict_from_url(download_url, map_location='cpu')
-            else:
-                state = torch.load(pretrained, map_location='cpu')
-            self.load_state_dict(state)
-            print(f'Load HGNetv2_{name} state_dict')
+        if pre_trained:
+            self._load_pretrained_with_extra_channel(name, download_url, pretrained)
+
+        # if pretrained:
+        #     if isinstance(pretrained, bool) or 'http' in pretrained:
+        #         state = torch.hub.load_state_dict_from_url(download_url, map_location='cpu')
+        #     else:
+        #         state = torch.load(pretrained, map_location='cpu')
+        #     self.load_state_dict(state)
+        #     print(f'Load HGNetv2_{name} state_dict')
         
+    def _load_pretrained_with_extra_channel(self, name, url, pretrained_path):
+            """
+            Custom loader for HGNetv2-L to support 4-channel (RGB-D) input.
+            - Inherits 3-channel RGB weights from pretrained checkpoint.
+            - Initializes the 4th (Depth) channel using Kaiming Normal.
+            """
+            if isinstance(pretrained_path, bool) or 'http' in pretrained_path:
+                state = torch.hub.load_state_dict_from_url(url, map_location='cpu')
+            else:
+                state = torch.load(pretrained_path, map_location='cpu')
+
+            # We look for the weights of the very first convolution in the stem
+            for key in list(state.keys()):
+                # Target the weight tensor of the first conv layer
+                if 'stem.stem1.conv' in key and 'weight' in key:
+                    old_weight = state[key] # Expected shape: [out, 3, k, k]
+                    
+                    # Check if it's the 3-channel input layer we want to expand
+                    if old_weight.shape[1] == 3:
+                        out_channels, _, k_h, k_w = old_weight.shape
+                        
+                        # 1. Create a new weight tensor [out, 4, k, k]
+                        # Using empty() then filling is more efficient than zeros()
+                        new_weight = torch.empty((out_channels, 4, k_h, k_w))
+                        
+                        # 2. Copy the RGB weights (channels 0, 1, 2)
+                        new_weight[:, :3, :, :] = old_weight
+                        
+                        # 3. Apply Kaiming Normal to the Depth slice (channel 3)
+                        # We use fan_out because this is the very first layer
+                        depth_slice = new_weight[:, 3:4, :, :]
+                        torch.nn.init.kaiming_normal_(depth_slice, mode='fan_out', nonlinearity='relu')
+                        
+                        # 4. Replace the old weight in the state_dict
+                        state[key] = new_weight
+                        print(f"DEBUG: Expanded {key} to 4 channels with Kaiming init on depth.")
+
+            # strict=False is helpful if you've modified other small parts of the architecture
+            self.load_state_dict(state, strict=False)
+            print(f'Successfully loaded HGNetv2_{name} with RGB-D weight surgery.')
 
     def _init_weights(self):
         for m in self.modules():

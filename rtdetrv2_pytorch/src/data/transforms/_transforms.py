@@ -33,6 +33,30 @@ SanitizeBoundingBoxes = register(name='SanitizeBoundingBoxes')(SanitizeBoundingB
 RandomCrop = register()(T.RandomCrop)
 Normalize = register()(T.Normalize)
 
+@register()
+class RGBOnlyTransform(nn.Module):
+    def __init__(self, transform_op: dict):
+        super().__init__()
+        # Use the registry to create the actual torchvision transform
+        from ...core import GLOBAL_CONFIG
+        self.op = GLOBAL_CONFIG[transform_op['type']](**{k:v for k,v in transform_op.items() if k != 'type'})
+
+    def forward(self, img, target=None):
+        # Handle 4-channel split
+        if img.shape[0] == 4:
+            rgb = img[:3, :, :]
+            depth = img[3:, :, :]
+            
+            # Apply color transform to RGB only
+            # torchvision v2 handles (img, target) tuples
+            rgb, target = self.op(rgb, target)
+            
+            # Re-stack
+            img = torch.cat([rgb, depth], dim=0)
+        else:
+            img, target = self.op(img, target)
+            
+        return img, target
 
 @register()
 class EmptyTransform(T.Transform):

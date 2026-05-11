@@ -8,6 +8,8 @@ postprocessor: RTDETRPostProcessor
 use_focal_loss: True
 eval_spatial_size: [640, 640] # h w
 
+in_channels: 4
+
 
 RTDETR: 
   backbone: PResNet
